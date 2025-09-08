@@ -9,17 +9,14 @@ app.MapGet("/", async context =>
 {
     context.Response.ContentType = "text/html; charset=utf-8";
 
-    // Build HTML without fancy raw strings to avoid compiler quirks on CI
-    var htmlTop =
-@"<!doctype html>
+    var html = $@"
+<!doctype html>
 <html lang=""en"">
 <head>
 <meta charset=""utf-8"">
 <title>Azure .NET + Dynatrace demo</title>
-";
-
-    var htmlMid =
-@"</head>
+{rum}
+</head>
 <body>
   <h1>Azure .NET + Dynatrace demo</h1>
   <ul>
@@ -29,21 +26,34 @@ app.MapGet("/", async context =>
   </ul>
 
   <script>
-    // trigger XHRs so RUM sees frontend calls
-    fetch('/api/ok').catch(()=>{});
-    fetch('/api/external').catch(()=>{});
+    function randomMs(min, max) {{
+      return Math.floor(Math.random() * (max - min + 1)) + min;
+    }}
+
+    function schedule(fn, min, max) {{
+      fn();
+      setInterval(fn, randomMs(min, max));
+    }}
+
+    // hit homepage (/) periodically to trigger page loads
+    schedule(() => fetch('/').catch(()=>{{}}), 5000, 10000);
+
+    // hit ok endpoint
+    schedule(() => fetch('/api/ok').catch(()=>{{}}), 1000, 3000);
+
+    // hit external dependency
+    schedule(() => fetch('/api/external').catch(()=>{{}}), 2000, 4000);
+
+    // send an error now and then
+    schedule(() => fetch('/api/error').catch(()=>{{}}), 15000, 30000);
   </script>
 </body>
 </html>";
 
-    var full = htmlTop + rum + htmlMid;
-    await context.Response.WriteAsync(full);
+    await context.Response.WriteAsync(html);
 });
 
-app.MapGet("/api/ok", () =>
-{
-    return Results.Json(new { ok = true, t = DateTime.UtcNow });
-});
+app.MapGet("/api/ok", () => Results.Json(new { ok = true, t = DateTime.UtcNow }));
 
 app.MapGet("/api/external", async () =>
 {
@@ -52,9 +62,6 @@ app.MapGet("/api/external", async () =>
     return Results.Json(new { upstream = (int)r.StatusCode });
 });
 
-app.MapGet("/api/error", () =>
-{
-    throw new Exception("boom");
-});
+app.MapGet("/api/error", () => throw new Exception("boom"));
 
 app.Run();
