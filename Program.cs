@@ -1,18 +1,29 @@
 using System.Net.Http;
+
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
-app.MapGet("/", () => """
-  <h1>Azure .NET + Dynatrace demo</h1>
-  <ul>
-    <li><a href="/api/external">/api/external</a> call public API</li>
-    <li><a href="/api/error">/api/error</a> forced error</li>
-    <li><a href="/api/ok">/api/ok</a> healthy request</li>
-  </ul>
-""");
+// Home page with HTML links
+app.MapGet("/", async context =>
+{
+    context.Response.ContentType = "text/html; charset=utf-8";
+    await context.Response.WriteAsync("""
+        <h1>Azure .NET + Dynatrace demo</h1>
+        <ul>
+          <li><a href="/api/external">/api/external</a> call public API</li>
+          <li><a href="/api/error">/api/error</a> forced error</li>
+          <li><a href="/api/ok">/api/ok</a> healthy request</li>
+        </ul>
+    """);
+});
 
-app.MapGet("/api/ok", () => Results.Json(new { ok = true, t = DateTime.UtcNow }));
+// Healthy route
+app.MapGet("/api/ok", () =>
+{
+    return Results.Json(new { ok = true, t = DateTime.UtcNow });
+});
 
+// External API call to show dependency
 app.MapGet("/api/external", async () =>
 {
     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
@@ -20,6 +31,7 @@ app.MapGet("/api/external", async () =>
     return Results.Json(new { upstream = (int)r.StatusCode });
 });
 
+// Forced error to create failures and exceptions
 app.MapGet("/api/error", () =>
 {
     throw new Exception("boom");
