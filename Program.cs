@@ -3,10 +3,7 @@ using System.Net.Http;
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
-// 1) Paste your exact Dynatrace RUM <script> tag between the quotes below
-//    Example:
-//    "<script type=\"text/javascript\" src=\"https://js-cdn.dynatrace.com/jstag/...complete.js\" crossorigin=\"anonymous\"></script>"
-string rum = "<!-- INSERT YOUR DYNATRACE RUM SCRIPT TAG HERE -->";
+string rum = "<script type="text/javascript" src="https://js-cdn.dynatrace.com/jstag/1944242a637/bf28228awz/a7cb1a5e608f619f_complete.js" crossorigin="anonymous"></script>";
 
 app.MapGet("/", async context =>
 {
