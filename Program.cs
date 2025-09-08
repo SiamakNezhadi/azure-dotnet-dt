@@ -1,28 +1,17 @@
 using System.Net.Http;
-using StackExchange.Redis;
 using System.Collections.Concurrent;
-
-static class MemStore
-{
-    public static long Hits;
-    public static ConcurrentDictionary<string,long> ByRoute = new();
-}
 
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
-// HTTP client reused for all outbound calls
+string rum = "<script type=\"text/javascript\" src=\"https://js-cdn.dynatrace.com/jstag/1944242a637/bf28228awz/a7cb1a5e608f619f_complete.js\" crossorigin=\"anonymous\"></script>";
+
+// shared http client
 var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
 
-// Optional Redis connection. Set REDIS_CONNECTION in Azure App Settings to enable.
-Lazy<ConnectionMultiplexer?> lazyRedis = new(() =>
-{
-    var cs = Environment.GetEnvironmentVariable("REDIS_CONNECTION");
-    return string.IsNullOrWhiteSpace(cs) ? null : ConnectionMultiplexer.Connect(cs);
-});
-
-
-string rum = """"<script type="text/javascript" src="https://js-cdn.dynatrace.com/jstag/1944242a637/bf28228awz/a7cb1a5e608f619f_complete.js" crossorigin="anonymous"></script>"""";
+// simple in-memory counters (no DB)
+long totalHits = 0;
+var hitsByRoute = new ConcurrentDictionary<string, long>();
 
 app.MapGet("/", async context =>
 {
@@ -70,20 +59,16 @@ app.MapGet("/", async context =>
       await fetchJson('/api/external');
       await fetchJson('/api/secondapi');
       await fetchJson('/api/db');
-      // fire one that fails
       fetch('/no-such-route', {cache:'no-store'}).catch(()=>{});
-      // load a broken resource
       document.getElementById('brokenImg').src = '/missing-' + Date.now() + '.png';
     };
 
-    // auto traffic every 3 seconds
     let timer = setInterval(hit, 3000);
     document.getElementById('auto').addEventListener('change', e => {
       if (e.target.checked) timer = setInterval(hit, 3000);
       else { clearInterval(timer); timer = null; }
     });
 
-    // buttons
     document.getElementById('burst').addEventListener('click', async () => {
       for (let i=0;i<50;i++) hit();
     });
@@ -94,12 +79,10 @@ app.MapGet("/", async context =>
 
     document.getElementById('fail').addEventListener('click', async () => {
       await fetchJson('/api/badupstream');
-      // also call a route that throws on server
       fetch('/api/error').catch(()=>{});
     });
 
     document.getElementById('jsError').addEventListener('click', () => {
-      // intentional JS error for RUM
       throw new Error('frontend exploded on purpose');
     });
 
@@ -114,12 +97,9 @@ app.MapGet("/", async context =>
       fn();
       setInterval(fn, randomMs(min, max));
     }
-    // hit homepage periodically (page stays loaded; this is a background fetch)
     schedule(() => fetch('/').catch(()=>{}), 5000, 10000);
-    // steady backend traffic
     schedule(() => fetch('/api/ok').catch(()=>{}), 1000, 3000);
     schedule(() => fetch('/api/external').catch(()=>{}), 2000, 4000);
-    // occasional errors
     schedule(() => fetch('/api/error').catch(()=>{}), 15000, 30000);
   </script>
 </body>
@@ -136,18 +116,10 @@ app.MapGet("/api/ok", () =>
 
 app.MapGet("/api/external", async () =>
 {
-    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
     var r = await http.GetAsync("https://jsonplaceholder.typicode.com/todos/1");
     return Results.Json(new { upstream = (int)r.StatusCode });
 });
 
-// Important: provide a compatible delegate signature
-app.MapGet("/api/error", (HttpContext _) =>
-{
-    throw new Exception("boom");
-});
-
-// Shows an extra HTTP dependency (httpbin)
 app.MapGet("/api/secondapi", async () =>
 {
     var r = await http.GetAsync("https://httpbin.org/uuid");
@@ -155,34 +127,19 @@ app.MapGet("/api/secondapi", async () =>
     return Results.Json(new { upstream = (int)r.StatusCode, len = body.Length });
 });
 
-// fake "db" endpoint, just increments counters in memory
 app.MapGet("/api/db", () =>
 {
-    var total = Interlocked.Increment(ref MemStore.Hits);
-    var perRoute = MemStore.ByRoute.AddOrUpdate("/api/db", 1, (_, v) => v + 1);
+    var total = Interlocked.Increment(ref totalHits);
+    var perRoute = hitsByRoute.AddOrUpdate("/api/db", 1, (_, v) => v + 1);
     return Results.Json(new { ok = true, total, perRoute, note = "in-memory, no real DB" });
 });
 
-// Requires REDIS_CONNECTION in App Settings (Azure Cache for Redis works)
-app.MapGet("/api/redis", async () =>
-{
-    var mux = lazyRedis.Value;
-    if (mux == null) return Results.Json(new { ok = false, message = "redis not configured" });
-
-    var db = mux.GetDatabase();
-    var key = "demo:counter";
-    var val = await db.StringIncrementAsync(key);
-    return Results.Json(new { ok = true, counter = (long)val });
-});
-
-// Adds a slow request to create latency outliers
 app.MapGet("/api/slow", async () =>
 {
     await Task.Delay(3000);
     return Results.Json(new { ok = true, delayedMs = 3000 });
 });
 
-// Calls a bad domain to generate connection failures
 app.MapGet("/api/badupstream", async () =>
 {
     try
@@ -192,10 +149,13 @@ app.MapGet("/api/badupstream", async () =>
     }
     catch (Exception e)
     {
-        // surfaces as failed external call in Dynatrace
         return Results.Problem($"upstream failed: {e.GetType().Name}");
     }
 });
 
+app.MapGet("/api/error", (HttpContext _) =>
+{
+    throw new Exception("boom");
+});
 
 app.Run();
