@@ -3,6 +3,9 @@ using System.Net.Http;
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
+string rum = """"<script type="text/javascript" src="https://js-cdn.dynatrace.com/jstag/1944242a637/bf28228awz/a7cb1a5e608f619f_complete.js" crossorigin="anonymous"></script>"""";
+
+
 // Home page with HTML links
 app.MapGet("/", async context =>
 {
