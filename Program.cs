@@ -1,34 +1,7 @@
 using System.Net.Http;
-using Microsoft.Data.Sqlite;
-using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
-// HTTP client reused for all outbound calls
-var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-
-// SQLite file under the writable home folder
-var dbPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "demo.sqlite");
-
-// Ensure DB exists and has a table
-void InitDb()
-{
-    Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-    using var con = new SqliteConnection($"Data Source={dbPath}");
-    con.Open();
-    using var cmd = con.CreateCommand();
-    cmd.CommandText = "CREATE TABLE IF NOT EXISTS hits (id INTEGER PRIMARY KEY, route TEXT, ts TEXT);";
-    cmd.ExecuteNonQuery();
-}
-InitDb();
-
-// Optional Redis connection. Set REDIS_CONNECTION in Azure App Settings to enable.
-Lazy<ConnectionMultiplexer?> lazyRedis = new(() =>
-{
-    var cs = Environment.GetEnvironmentVariable("REDIS_CONNECTION");
-    return string.IsNullOrWhiteSpace(cs) ? null : ConnectionMultiplexer.Connect(cs);
-});
-
 
 string rum = """"<script type="text/javascript" src="https://js-cdn.dynatrace.com/jstag/1944242a637/bf28228awz/a7cb1a5e608f619f_complete.js" crossorigin="anonymous"></script>"""";
 
@@ -48,12 +21,72 @@ app.MapGet("/", async context =>
 @"</head>
 <body>
   <h1>Azure .NET + Dynatrace demo</h1>
-  <ul>
-    <li><a href=""/api/external"">/api/external</a> call public API</li>
-    <li><a href=""/api/error"">/api/error</a> forced error</li>
-    <li><a href=""/api/ok"">/api/ok</a> healthy request</li>
-  </ul>
 
+  <section style=""margin:1rem 0;padding:1rem;border:1px solid #ddd"">
+    <h2>frontend controls</h2>
+    <button id=""burst"">burst 50 calls</button>
+    <button id=""slow"">trigger slow</button>
+    <button id=""fail"">trigger failures</button>
+    <button id=""jsError"">throw JS error</button>
+    <label style=""margin-left:1rem;""><input type=""checkbox"" id=""auto"" checked> auto traffic</label>
+  </section>
+
+  <section>
+    <ul>
+      <li><a href=""/api/ok"">/api/ok</a></li>
+      <li><a href=""/api/external"">/api/external</a></li>
+      <li><a href=""/api/secondapi"">/api/secondapi</a></li>
+      <li><a href=""/api/db"">/api/db</a></li>
+      <li><a href=""/api/slow"">/api/slow</a></li>
+      <li><a href=""/api/badupstream"">/api/badupstream</a></li>
+    </ul>
+  </section>
+
+  <img id=""brokenImg"" src=""/does-not-exist.png"" alt=""broken"" style=""display:none"">
+
+  <script>
+    const fetchJson = p => fetch(p, {cache:'no-store'}).then(r => r.json()).catch(_=>{});
+    const hit = async () => {
+      await fetchJson('/api/ok');
+      await fetchJson('/api/external');
+      await fetchJson('/api/secondapi');
+      await fetchJson('/api/db');
+      // fire one that fails
+      fetch('/no-such-route', {cache:'no-store'}).catch(()=>{});
+      // load a broken resource
+      document.getElementById('brokenImg').src = '/missing-' + Date.now() + '.png';
+    };
+
+    // auto traffic every 3 seconds
+    let timer = setInterval(hit, 3000);
+    document.getElementById('auto').addEventListener('change', e => {
+      if (e.target.checked) timer = setInterval(hit, 3000);
+      else { clearInterval(timer); timer = null; }
+    });
+
+    // buttons
+    document.getElementById('burst').addEventListener('click', async () => {
+      for (let i=0;i<50;i++) hit();
+    });
+
+    document.getElementById('slow').addEventListener('click', async () => {
+      await fetchJson('/api/slow');
+    });
+
+    document.getElementById('fail').addEventListener('click', async () => {
+      await fetchJson('/api/badupstream');
+      // also call a route that throws on server
+      fetch('/api/error').catch(()=>{});
+    });
+
+    document.getElementById('jsError').addEventListener('click', () => {
+      // intentional JS error for RUM
+      throw new Error('frontend exploded on purpose');
+    });
+
+    // warm up immediately
+    hit();
+  </script>
   <script>
     function randomMs(min, max) {
       return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -94,68 +127,5 @@ app.MapGet("/api/error", (HttpContext _) =>
 {
     throw new Exception("boom");
 });
-
-// Shows an extra HTTP dependency (httpbin)
-app.MapGet("/api/secondapi", async () =>
-{
-    var r = await http.GetAsync("https://httpbin.org/uuid");
-    var body = await r.Content.ReadAsStringAsync();
-    return Results.Json(new { upstream = (int)r.StatusCode, len = body.Length });
-});
-
-
-// Inserts and reads a row so Dynatrace sees DB I/O
-app.MapGet("/api/db", () =>
-{
-    using var con = new SqliteConnection($"Data Source={dbPath}");
-    con.Open();
-    using (var insert = con.CreateCommand())
-    {
-        insert.CommandText = "INSERT INTO hits(route, ts) VALUES ($route, $ts);";
-        insert.Parameters.AddWithValue("$route", "/api/db");
-        insert.Parameters.AddWithValue("$ts", DateTime.UtcNow.ToString("O"));
-        insert.ExecuteNonQuery();
-    }
-    using var select = con.CreateCommand();
-    select.CommandText = "SELECT COUNT(1) FROM hits;";
-    var count = (long)(select.ExecuteScalar() ?? 0);
-    return Results.Json(new { ok = true, total = count });
-});
-
-
-// Requires REDIS_CONNECTION in App Settings (Azure Cache for Redis works)
-app.MapGet("/api/redis", async () =>
-{
-    var mux = lazyRedis.Value;
-    if (mux == null) return Results.Json(new { ok = false, message = "redis not configured" });
-
-    var db = mux.GetDatabase();
-    var key = "demo:counter";
-    var val = await db.StringIncrementAsync(key);
-    return Results.Json(new { ok = true, counter = (long)val });
-});
-
-// Adds a slow request to create latency outliers
-app.MapGet("/api/slow", async () =>
-{
-    await Task.Delay(3000);
-    return Results.Json(new { ok = true, delayedMs = 3000 });
-});
-
-// Calls a bad domain to generate connection failures
-app.MapGet("/api/badupstream", async () =>
-{
-    try
-    {
-        var r = await http.GetAsync("https://does-not-exist-xyz.demo.example.com/");
-        return Results.Json(new { upstream = (int)r.StatusCode });
-    }
-    catch (Exception e)
-    {
-        // surfaces as failed external call in Dynatrace
-        return Results.Problem($"upstream failed: {e.GetType().Name}");
-    }
-});
-
 
 app.Run();
