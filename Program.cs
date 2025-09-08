@@ -2,7 +2,11 @@ using System.Net.Http;
 using StackExchange.Redis;
 using System.Collections.Concurrent;
 
-
+static class MemStore
+{
+    public static long Hits;
+    public static ConcurrentDictionary<string,long> ByRoute = new();
+}
 
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
@@ -150,13 +154,6 @@ app.MapGet("/api/secondapi", async () =>
     var body = await r.Content.ReadAsStringAsync();
     return Results.Json(new { upstream = (int)r.StatusCode, len = body.Length });
 });
-
-// Inserts and reads a row so Dynatrace sees DB I/O
-static class MemStore
-{
-    public static long Hits;
-    public static ConcurrentDictionary<string,long> ByRoute = new();
-}
 
 // fake "db" endpoint, just increments counters in memory
 app.MapGet("/api/db", () =>
