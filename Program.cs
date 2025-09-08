@@ -1,6 +1,7 @@
 using System.Net.Http;
-using Microsoft.Data.Sqlite;
 using StackExchange.Redis;
+using System.Collections.Concurrent;
+
 
 
 var builder = WebApplication.CreateBuilder(args);
@@ -8,21 +9,6 @@ var app = builder.Build();
 
 // HTTP client reused for all outbound calls
 var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-
-// SQLite file under the writable home folder
-var dbPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "demo.sqlite");
-
-// Ensure DB exists and has a table
-void InitDb()
-{
-    Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-    using var con = new SqliteConnection($"Data Source={dbPath}");
-    con.Open();
-    using var cmd = con.CreateCommand();
-    cmd.CommandText = "CREATE TABLE IF NOT EXISTS hits (id INTEGER PRIMARY KEY, route TEXT, ts TEXT);";
-    cmd.ExecuteNonQuery();
-}
-InitDb();
 
 // Optional Redis connection. Set REDIS_CONNECTION in Azure App Settings to enable.
 Lazy<ConnectionMultiplexer?> lazyRedis = new(() =>
@@ -166,21 +152,18 @@ app.MapGet("/api/secondapi", async () =>
 });
 
 // Inserts and reads a row so Dynatrace sees DB I/O
+static class MemStore
+{
+    public static long Hits;
+    public static ConcurrentDictionary<string,long> ByRoute = new();
+}
+
+// fake "db" endpoint, just increments counters in memory
 app.MapGet("/api/db", () =>
 {
-    using var con = new SqliteConnection($"Data Source={dbPath}");
-    con.Open();
-    using (var insert = con.CreateCommand())
-    {
-        insert.CommandText = "INSERT INTO hits(route, ts) VALUES ($route, $ts);";
-        insert.Parameters.AddWithValue("$route", "/api/db");
-        insert.Parameters.AddWithValue("$ts", DateTime.UtcNow.ToString("O"));
-        insert.ExecuteNonQuery();
-    }
-    using var select = con.CreateCommand();
-    select.CommandText = "SELECT COUNT(1) FROM hits;";
-    var count = (long)(select.ExecuteScalar() ?? 0);
-    return Results.Json(new { ok = true, total = count });
+    var total = Interlocked.Increment(ref MemStore.Hits);
+    var perRoute = MemStore.ByRoute.AddOrUpdate("/api/db", 1, (_, v) => v + 1);
+    return Results.Json(new { ok = true, total, perRoute, note = "in-memory, no real DB" });
 });
 
 // Requires REDIS_CONNECTION in App Settings (Azure Cache for Redis works)
