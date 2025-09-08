@@ -9,14 +9,16 @@ app.MapGet("/", async context =>
 {
     context.Response.ContentType = "text/html; charset=utf-8";
 
-    var html = $@"
-<!doctype html>
+    var htmlTop =
+@"<!doctype html>
 <html lang=""en"">
 <head>
 <meta charset=""utf-8"">
 <title>Azure .NET + Dynatrace demo</title>
-{rum}
-</head>
+";
+
+    var htmlMid =
+@"</head>
 <body>
   <h1>Azure .NET + Dynatrace demo</h1>
   <ul>
@@ -26,34 +28,32 @@ app.MapGet("/", async context =>
   </ul>
 
   <script>
-    function randomMs(min, max) {{
+    function randomMs(min, max) {
       return Math.floor(Math.random() * (max - min + 1)) + min;
-    }}
-
-    function schedule(fn, min, max) {{
+    }
+    function schedule(fn, min, max) {
       fn();
       setInterval(fn, randomMs(min, max));
-    }}
-
-    // hit homepage (/) periodically to trigger page loads
-    schedule(() => fetch('/').catch(()=>{{}}), 5000, 10000);
-
-    // hit ok endpoint
-    schedule(() => fetch('/api/ok').catch(()=>{{}}), 1000, 3000);
-
-    // hit external dependency
-    schedule(() => fetch('/api/external').catch(()=>{{}}), 2000, 4000);
-
-    // send an error now and then
-    schedule(() => fetch('/api/error').catch(()=>{{}}), 15000, 30000);
+    }
+    // hit homepage periodically (page stays loaded; this is a background fetch)
+    schedule(() => fetch('/').catch(()=>{}), 5000, 10000);
+    // steady backend traffic
+    schedule(() => fetch('/api/ok').catch(()=>{}), 1000, 3000);
+    schedule(() => fetch('/api/external').catch(()=>{}), 2000, 4000);
+    // occasional errors
+    schedule(() => fetch('/api/error').catch(()=>{}), 15000, 30000);
   </script>
 </body>
 </html>";
 
-    await context.Response.WriteAsync(html);
+    var full = htmlTop + rum + htmlMid;
+    await context.Response.WriteAsync(full);
 });
 
-app.MapGet("/api/ok", () => Results.Json(new { ok = true, t = DateTime.UtcNow }));
+app.MapGet("/api/ok", () =>
+{
+    return Results.Json(new { ok = true, t = DateTime.UtcNow });
+});
 
 app.MapGet("/api/external", async () =>
 {
@@ -62,6 +62,10 @@ app.MapGet("/api/external", async () =>
     return Results.Json(new { upstream = (int)r.StatusCode });
 });
 
-app.MapGet("/api/error", () => throw new Exception("boom"));
+// Important: provide a compatible delegate signature
+app.MapGet("/api/error", (HttpContext _) =>
+{
+    throw new Exception("boom");
+});
 
 app.Run();
